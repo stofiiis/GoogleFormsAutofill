@@ -117,7 +117,7 @@ async function runPreview(tabId) {
   }
 
   lastPreview = normalizePreviewData(response.data, tabId);
-  renderPreview(lastPreview.previewItems);
+  renderPreview(lastPreview);
   renderDebug(lastPreview);
   applyButton.hidden = false;
   applyButton.disabled = !hasSelectedPreviewItems();
@@ -132,6 +132,7 @@ function normalizePreviewData(data, tabId) {
   const previewItems = Array.isArray(data?.previewItems) ? data.previewItems : [];
   const answers = Array.isArray(data?.answers) ? data.answers : [];
   const validationIssues = Array.isArray(data?.validationIssues) ? data.validationIssues : [];
+  const validationByQuestionId = groupValidationIssuesByQuestionId(validationIssues);
 
   return {
     tabId,
@@ -140,23 +141,28 @@ function normalizePreviewData(data, tabId) {
     previewItems,
     answers,
     validationIssues,
+    validationByQuestionId,
     rawModelText: String(data?.rawModelText || "")
   };
 }
 
-function renderPreview(items) {
+function renderPreview(preview) {
+  const items = preview.previewItems || [];
+  const issuesByQuestionId = preview.validationByQuestionId || new Map();
   previewListEl.innerHTML = "";
   previewSectionEl.hidden = false;
 
   for (const item of items) {
+    const riskIssues = issuesByQuestionId.get(String(item.questionId || "")) || [];
+    const isRisk = riskIssues.length > 0;
     const row = document.createElement("label");
-    row.className = "preview-item";
+    row.className = `preview-item${isRisk ? " risk" : ""}`;
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.className = "preview-check";
     checkbox.dataset.questionId = String(item.questionId || "");
-    checkbox.checked = Boolean(item.canApply);
+    checkbox.checked = Boolean(item.canApply) && !isRisk;
     checkbox.disabled = !item.canApply;
 
     const content = document.createElement("div");
@@ -179,6 +185,12 @@ function renderPreview(items) {
     content.appendChild(title);
     content.appendChild(answer);
     content.appendChild(reason);
+    if (isRisk) {
+      const risk = document.createElement("div");
+      risk.className = "preview-risk";
+      risk.textContent = `Risk: ${riskIssues.join(" | ")}`;
+      content.appendChild(risk);
+    }
     row.appendChild(checkbox);
     row.appendChild(content);
     previewListEl.appendChild(row);
@@ -234,6 +246,29 @@ function setWorking(isWorking) {
 
 function updateFillButtonLabel() {
   fillButton.textContent = previewModeEl.checked ? "Analyze (Preview)" : "Analyze and Fill";
+}
+
+function groupValidationIssuesByQuestionId(issues) {
+  const byQuestionId = new Map();
+  for (const rawIssue of issues || []) {
+    const issue = String(rawIssue || "").trim();
+    if (!issue) {
+      continue;
+    }
+    const match = issue.match(/questionId\s+['"]([^'"]+)['"]/i);
+    if (!match?.[1]) {
+      continue;
+    }
+    const questionId = String(match[1]).trim();
+    if (!questionId) {
+      continue;
+    }
+    if (!byQuestionId.has(questionId)) {
+      byQuestionId.set(questionId, []);
+    }
+    byQuestionId.get(questionId).push(issue);
+  }
+  return byQuestionId;
 }
 
 function setStatus(message, isError) {
