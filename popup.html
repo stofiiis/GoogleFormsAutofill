@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forms AutoFill</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <h1>Forms AutoFill</h1>
+      <p class="hint">Open a Google Form tab and click the button (or press Ctrl+Shift+Y / Cmd+Shift+Y).</p>
+      <label for="instruction">Optional instruction</label>
+      <textarea
+        id="instruction"
+        rows="3"
+        placeholder="Example: Reply as a senior frontend developer."
+      ></textarea>
+      <button id="fillButton">Analyze and Fill</button>
+      <p id="status" aria-live="polite"></p>
+      <a class="link" href="options.html" target="_blank" rel="noopener">Settings</a>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

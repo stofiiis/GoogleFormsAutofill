@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Google Forms AutoFill via OpenAI",
+  "version": "0.1.0",
+  "description": "Reads Google Form questions, asks OpenAI for answers, and fills the form automatically.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://docs.google.com/forms/*",
+    "https://api.openai.com/*"
+  ],
+  "action": {
+    "default_title": "Forms AutoFill",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "commands": {
+    "autofill-active-form": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Analyze and fill the active Google Form"
+    }
+  },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://docs.google.com/forms/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
