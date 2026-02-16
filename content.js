@@ -526,10 +526,14 @@ function resolveControlByText(question, text) {
   if (!target) {
     return null;
   }
+  const labeledControls = question.controls
+    .map((el) => ({ el, label: normalize(getControlLabel(el)) }))
+    .filter((item) => item.label);
+
   const direct =
-    question.controls.find((el) => normalize(getControlLabel(el)) === target) ||
-    question.controls.find((el) => normalize(getControlLabel(el)).includes(target)) ||
-    question.controls.find((el) => target.includes(normalize(getControlLabel(el))));
+    labeledControls.find((item) => item.label === target)?.el ||
+    labeledControls.find((item) => item.label.includes(target))?.el ||
+    labeledControls.find((item) => target.includes(item.label))?.el;
   if (direct) {
     return direct;
   }
@@ -539,6 +543,16 @@ function resolveControlByText(question, text) {
       return resolveControlByIndex(question, option.optionIndex);
     }
   }
+
+  const looseOptionMatch =
+    (question.options || []).find((option) => {
+      const optionText = normalize(option.text);
+      return optionText && (optionText.includes(target) || target.includes(optionText));
+    }) || null;
+  if (looseOptionMatch) {
+    return resolveControlByIndex(question, looseOptionMatch.optionIndex);
+  }
+
   return null;
 }
 
@@ -548,7 +562,10 @@ function resolveControlByExactText(question, text) {
     return null;
   }
 
-  const direct = question.controls.find((el) => normalize(getControlLabel(el)) === target);
+  const direct = question.controls.find((el) => {
+    const label = normalize(getControlLabel(el));
+    return label && label === target;
+  });
   if (direct) {
     return direct;
   }
@@ -639,10 +656,13 @@ function resolveDropdownOption(optionElements, target) {
       }
     }
     const normalizedTarget = normalize(trimmed);
+    const labeledOptions = optionElements
+      .map((el) => ({ el, label: normalize(getDropdownOptionLabel(el)) }))
+      .filter((item) => item.label);
     const byText =
-      optionElements.find((el) => normalize(getDropdownOptionLabel(el)) === normalizedTarget) ||
-      optionElements.find((el) => normalize(getDropdownOptionLabel(el)).includes(normalizedTarget)) ||
-      optionElements.find((el) => normalizedTarget.includes(normalize(getDropdownOptionLabel(el))));
+      labeledOptions.find((item) => item.label === normalizedTarget)?.el ||
+      labeledOptions.find((item) => item.label.includes(normalizedTarget))?.el ||
+      labeledOptions.find((item) => normalizedTarget.includes(item.label))?.el;
     return byText || null;
   }
 
@@ -670,7 +690,12 @@ function resolveDropdownOptionByExactText(optionElements, text) {
   if (!normalizedTarget) {
     return null;
   }
-  return optionElements.find((el) => normalize(getDropdownOptionLabel(el)) === normalizedTarget) || null;
+  return (
+    optionElements.find((el) => {
+      const label = normalize(getDropdownOptionLabel(el));
+      return label && label === normalizedTarget;
+    }) || null
+  );
 }
 
 function coerceDropdownIndex(value, total) {
