@@ -44,6 +44,7 @@ label {
 }
 
 textarea,
+select,
 input:not([type="checkbox"]) {
   width: 100%;
   box-sizing: border-box;
@@ -109,6 +110,20 @@ button:disabled {
 
 #applyButton {
   background: #14532d;
+}
+
+.template-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.template-actions button {
+  white-space: nowrap;
+}
+
+button.danger {
+  background: #b91c1c;
 }
 
 .preview {

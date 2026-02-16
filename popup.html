@@ -10,6 +10,13 @@
     <main class="popup">
       <h1>Forms AutoFill</h1>
       <p class="hint">Open a Google Form tab and click the button (or press Ctrl+Shift+Y / Cmd+Shift+Y).</p>
+      <label for="templateSelect">Instruction template</label>
+      <select id="templateSelect"></select>
+      <div class="template-actions">
+        <input id="templateName" type="text" placeholder="Custom template name" />
+        <button id="saveTemplateButton" type="button">Save As Template</button>
+      </div>
+      <button id="deleteTemplateButton" class="danger" type="button" hidden>Delete Selected Template</button>
       <label for="instruction">Optional instruction</label>
       <textarea
         id="instruction"

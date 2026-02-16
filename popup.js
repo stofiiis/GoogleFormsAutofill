@@ -7,14 +7,72 @@ const previewSectionEl = document.getElementById("previewSection");
 const previewListEl = document.getElementById("previewList");
 const debugRawEl = document.getElementById("debugRaw");
 const debugMappingEl = document.getElementById("debugMapping");
+const templateSelectEl = document.getElementById("templateSelect");
+const templateNameEl = document.getElementById("templateName");
+const saveTemplateButton = document.getElementById("saveTemplateButton");
+const deleteTemplateButton = document.getElementById("deleteTemplateButton");
+
+const BUILTIN_TEMPLATE_ID = "builtin:none";
+const BUILTIN_TEMPLATES = [
+  { id: BUILTIN_TEMPLATE_ID, name: "No template", text: "" },
+  {
+    id: "builtin:student",
+    name: "Student",
+    text: "Answer as a diligent student. Keep answers clear, direct, and exam-oriented."
+  },
+  {
+    id: "builtin:brief",
+    name: "Brief",
+    text: "Answer briefly. Prefer the shortest correct choice or wording."
+  },
+  {
+    id: "builtin:formal",
+    name: "Formal",
+    text: "Answer in a formal and professional tone."
+  },
+  {
+    id: "builtin:expert",
+    name: "Expert",
+    text: "Answer as a domain expert using precise terminology and high factual accuracy."
+  }
+];
 
 let lastPreview = null;
+let customTemplates = [];
+let selectedTemplateId = BUILTIN_TEMPLATE_ID;
+let persistTimer = null;
 
-updateFillButtonLabel();
+initialize().catch((error) => {
+  setStatus(error instanceof Error ? error.message : String(error), true);
+});
 
 previewModeEl.addEventListener("change", () => {
   updateFillButtonLabel();
   resetPreview();
+});
+
+templateSelectEl.addEventListener("change", async () => {
+  try {
+    await applySelectedTemplate();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+});
+
+saveTemplateButton.addEventListener("click", async () => {
+  try {
+    await saveCurrentAsTemplate();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+});
+
+deleteTemplateButton.addEventListener("click", async () => {
+  try {
+    await deleteSelectedTemplate();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
 });
 
 instructionEl.addEventListener("input", () => {
@@ -22,6 +80,7 @@ instructionEl.addEventListener("input", () => {
     resetPreview();
     setStatus("Instruction changed. Analyze again to refresh preview.", false);
   }
+  schedulePersistTemplateState();
 });
 
 previewListEl.addEventListener("change", () => {
@@ -33,6 +92,7 @@ fillButton.addEventListener("click", async () => {
   setWorking(true);
   try {
     const activeTab = await getActiveGoogleFormTab();
+    await persistTemplateState();
     if (previewModeEl.checked) {
       await runPreview(activeTab.id);
     } else {
@@ -82,6 +142,186 @@ applyButton.addEventListener("click", async () => {
     setWorking(false);
   }
 });
+
+async function initialize() {
+  updateFillButtonLabel();
+  await loadTemplateState();
+  updateTemplateButtons();
+}
+
+async function loadTemplateState() {
+  const data = await chrome.storage.sync.get({
+    instructionTemplates: [],
+    selectedInstructionTemplateId: BUILTIN_TEMPLATE_ID,
+    lastInstructionText: ""
+  });
+
+  customTemplates = normalizeCustomTemplates(data.instructionTemplates);
+  selectedTemplateId = resolveTemplateId(data.selectedInstructionTemplateId);
+  renderTemplateOptions();
+
+  const selectedTemplate = getTemplateById(selectedTemplateId);
+  const savedInstruction = String(data.lastInstructionText || "");
+  instructionEl.value = savedInstruction || selectedTemplate?.text || "";
+  templateSelectEl.value = selectedTemplateId;
+}
+
+function normalizeCustomTemplates(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item, index) => ({
+      id: normalizeCustomTemplateId(item?.id, index),
+      name: String(item?.name || "").trim(),
+      text: String(item?.text || "").trim()
+    }))
+    .filter((item) => item.name && item.text);
+}
+
+function normalizeCustomTemplateId(id, index) {
+  const raw = String(id || "").trim();
+  if (raw.startsWith("custom:")) {
+    return raw;
+  }
+  return `custom:${Date.now()}-${index + 1}`;
+}
+
+function getAllTemplates() {
+  return [...BUILTIN_TEMPLATES, ...customTemplates];
+}
+
+function getTemplateById(templateId) {
+  return getAllTemplates().find((template) => template.id === templateId) || null;
+}
+
+function resolveTemplateId(templateId) {
+  const candidate = String(templateId || "").trim();
+  return getTemplateById(candidate) ? candidate : BUILTIN_TEMPLATE_ID;
+}
+
+function isCustomTemplateId(templateId) {
+  return String(templateId || "").startsWith("custom:");
+}
+
+function renderTemplateOptions() {
+  templateSelectEl.innerHTML = "";
+
+  const builtinGroup = document.createElement("optgroup");
+  builtinGroup.label = "Built-in";
+  for (const template of BUILTIN_TEMPLATES) {
+    const option = document.createElement("option");
+    option.value = template.id;
+    option.textContent = template.name;
+    builtinGroup.appendChild(option);
+  }
+  templateSelectEl.appendChild(builtinGroup);
+
+  if (customTemplates.length > 0) {
+    const customGroup = document.createElement("optgroup");
+    customGroup.label = "Custom";
+    for (const template of customTemplates) {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = template.name;
+      customGroup.appendChild(option);
+    }
+    templateSelectEl.appendChild(customGroup);
+  }
+
+  templateSelectEl.value = resolveTemplateId(selectedTemplateId);
+}
+
+async function applySelectedTemplate() {
+  selectedTemplateId = resolveTemplateId(templateSelectEl.value);
+  templateSelectEl.value = selectedTemplateId;
+  const template = getTemplateById(selectedTemplateId);
+  instructionEl.value = template?.text || "";
+  updateTemplateButtons();
+  resetPreview();
+  await persistTemplateState();
+  setStatus(`Template '${template?.name || "No template"}' loaded.`, false);
+}
+
+async function saveCurrentAsTemplate() {
+  const name = String(templateNameEl.value || "").trim();
+  const text = String(instructionEl.value || "").trim();
+
+  if (!name) {
+    throw new Error("Enter a custom template name first.");
+  }
+  if (!text) {
+    throw new Error("Instruction text is empty.");
+  }
+
+  const existing = customTemplates.find(
+    (template) => template.name.toLowerCase() === name.toLowerCase()
+  );
+
+  if (existing) {
+    existing.name = name;
+    existing.text = text;
+    selectedTemplateId = existing.id;
+    setStatus(`Template '${name}' updated.`, false);
+  } else {
+    const newTemplate = {
+      id: `custom:${Date.now()}`,
+      name,
+      text
+    };
+    customTemplates.push(newTemplate);
+    selectedTemplateId = newTemplate.id;
+    setStatus(`Template '${name}' saved.`, false);
+  }
+
+  renderTemplateOptions();
+  templateSelectEl.value = selectedTemplateId;
+  templateNameEl.value = "";
+  updateTemplateButtons();
+  await persistTemplateState();
+}
+
+async function deleteSelectedTemplate() {
+  if (!isCustomTemplateId(selectedTemplateId)) {
+    throw new Error("Select a custom template to delete.");
+  }
+
+  customTemplates = customTemplates.filter((template) => template.id !== selectedTemplateId);
+  selectedTemplateId = BUILTIN_TEMPLATE_ID;
+  renderTemplateOptions();
+  templateSelectEl.value = selectedTemplateId;
+  instructionEl.value = getTemplateById(selectedTemplateId)?.text || "";
+  updateTemplateButtons();
+  resetPreview();
+  await persistTemplateState();
+  setStatus("Custom template deleted.", false);
+}
+
+function updateTemplateButtons() {
+  const isCustom = isCustomTemplateId(selectedTemplateId);
+  deleteTemplateButton.hidden = !isCustom;
+  deleteTemplateButton.disabled = !isCustom;
+}
+
+function schedulePersistTemplateState() {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+  }
+  persistTimer = setTimeout(() => {
+    persistTemplateState().catch(() => {
+      // ignore storage write issues in background updates
+    });
+  }, 150);
+}
+
+async function persistTemplateState() {
+  await chrome.storage.sync.set({
+    instructionTemplates: customTemplates,
+    selectedInstructionTemplateId: selectedTemplateId,
+    lastInstructionText: instructionEl.value
+  });
+}
 
 async function getActiveGoogleFormTab() {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -239,6 +479,12 @@ function resetPreview() {
 
 function setWorking(isWorking) {
   fillButton.disabled = isWorking;
+  previewModeEl.disabled = isWorking;
+  templateSelectEl.disabled = isWorking;
+  templateNameEl.disabled = isWorking;
+  saveTemplateButton.disabled = isWorking;
+  instructionEl.disabled = isWorking;
+  deleteTemplateButton.disabled = isWorking || !isCustomTemplateId(selectedTemplateId);
   if (!applyButton.hidden) {
     applyButton.disabled = isWorking || !hasSelectedPreviewItems();
   }
