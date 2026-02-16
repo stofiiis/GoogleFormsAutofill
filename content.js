@@ -1,21 +1,101 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== "AUTO_FILL_FORM") {
+  if (!message || !message.type) {
     return;
   }
 
-  autoFillForm(message.customInstruction || "")
-    .then((result) => sendResponse({ ok: true, data: result }))
-    .catch((error) =>
-      sendResponse({
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      })
-    );
+  if (message.type === "AUTO_FILL_FORM") {
+    autoFillForm(message.customInstruction || "")
+      .then((result) => sendResponse({ ok: true, data: result }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+    return true;
+  }
 
-  return true;
+  if (message.type === "PREVIEW_FORM_ANSWERS") {
+    previewFormAnswers(message.customInstruction || "")
+      .then((result) => sendResponse({ ok: true, data: result }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+    return true;
+  }
+
+  if (message.type === "APPLY_FORM_ANSWERS") {
+    applyProvidedAnswers(message.answers)
+      .then((result) => sendResponse({ ok: true, data: result }))
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+    return true;
+  }
 });
 
 async function autoFillForm(customInstruction) {
+  const prepared = await prepareAnswers(customInstruction);
+  const applied = await applyAnswers(prepared.questions, prepared.answers);
+  return {
+    totalQuestions: prepared.questions.length,
+    totalAnswers: prepared.answers.length,
+    validationIssues: prepared.validationIssues,
+    answersApplied: applied
+  };
+}
+
+async function previewFormAnswers(customInstruction) {
+  const prepared = await prepareAnswers(customInstruction);
+  const previewItems = buildPreviewItems(prepared.questions, prepared.answers);
+  const applicableCount = previewItems.filter((item) => item.canApply).length;
+  return {
+    totalQuestions: prepared.questions.length,
+    totalAnswers: prepared.answers.length,
+    applicableAnswers: applicableCount,
+    previewItems,
+    answers: prepared.answers,
+    validationIssues: prepared.validationIssues,
+    rawModelText: prepared.rawModelText
+  };
+}
+
+async function applyProvidedAnswers(answers) {
+  if (!Array.isArray(answers) || answers.length === 0) {
+    throw new Error("No preview answers selected to apply.");
+  }
+
+  const questions = await collectQuestions();
+  if (!questions.length) {
+    throw new Error("No supported questions found. Open a Google Form and try again.");
+  }
+
+  const selectedQuestionIds = Array.from(
+    new Set(
+      answers
+        .map((answer) => String(answer?.questionId || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const applied = await applyAnswers(questions, answers, {
+    allowOrderFallback: false,
+    restrictQuestionIds: selectedQuestionIds
+  });
+  return {
+    totalQuestions: questions.length,
+    selectedQuestions: selectedQuestionIds.length,
+    answersApplied: applied
+  };
+}
+
+async function prepareAnswers(customInstruction) {
   const questions = await collectQuestions();
   if (!questions.length) {
     throw new Error("No supported questions found. Open a Google Form and try again.");
@@ -39,10 +119,11 @@ async function autoFillForm(customInstruction) {
     throw new Error(aiResponse?.error || "Failed to generate answers.");
   }
 
-  const applied = await applyAnswers(questions, aiResponse.data.answers || []);
   return {
-    totalQuestions: questions.length,
-    answersApplied: applied
+    questions,
+    answers: Array.isArray(aiResponse?.data?.answers) ? aiResponse.data.answers : [],
+    validationIssues: Array.isArray(aiResponse?.data?.validationIssues) ? aiResponse.data.validationIssues : [],
+    rawModelText: String(aiResponse?.data?.rawModelText || "")
   };
 }
 
@@ -161,38 +242,300 @@ async function collectQuestions() {
   return results;
 }
 
-async function applyAnswers(questionDefs, answers) {
-  const answerMap = new Map();
-  const orderedAnswers = [];
-
-  for (const answer of answers) {
-    const normalized = normalizeModelAnswer(answer);
-    orderedAnswers.push(normalized);
-    if (answer?.questionId) {
-      answerMap.set(answer.questionId, normalized);
-    }
-  }
-
-  const hasMatchingQuestionId = questionDefs.some((question) => answerMap.has(question.id));
+async function applyAnswers(questionDefs, answers, options = {}) {
+  const mapped = mapAnswersToQuestions(questionDefs, answers, options);
   let appliedCount = 0;
-  for (let index = 0; index < questionDefs.length; index += 1) {
-    const question = questionDefs[index];
-    let value;
-
-    if (answerMap.has(question.id)) {
-      value = answerMap.get(question.id);
-    } else if (!hasMatchingQuestionId && index < orderedAnswers.length) {
-      value = orderedAnswers[index];
-    } else {
-      continue;
-    }
-
-    const success = await applySingleAnswer(question, value);
+  for (const item of mapped) {
+    const success = await applySingleAnswer(item.question, item.value);
     if (success) {
       appliedCount += 1;
     }
   }
   return appliedCount;
+}
+
+function mapAnswersToQuestions(questionDefs, answers, options = {}) {
+  const answerMap = new Map();
+  const orderedAnswers = [];
+
+  for (const answer of answers || []) {
+    const normalized = normalizeModelAnswer(answer);
+    orderedAnswers.push(normalized);
+    if (answer?.questionId) {
+      const id = String(answer.questionId).trim();
+      if (id && !answerMap.has(id)) {
+        answerMap.set(id, normalized);
+      }
+    }
+  }
+
+  const allowOrderFallback = options.allowOrderFallback !== false;
+  const restrictSet = Array.isArray(options.restrictQuestionIds)
+    ? new Set(options.restrictQuestionIds.map((id) => String(id).trim()).filter(Boolean))
+    : null;
+  const hasMatchingQuestionId = questionDefs.some((question) => answerMap.has(question.id));
+  const mapped = [];
+
+  for (let index = 0; index < questionDefs.length; index += 1) {
+    const question = questionDefs[index];
+    if (restrictSet && !restrictSet.has(question.id)) {
+      continue;
+    }
+
+    let value;
+    let source = "none";
+
+    if (answerMap.has(question.id)) {
+      value = answerMap.get(question.id);
+      source = "questionId";
+    } else if (allowOrderFallback && !hasMatchingQuestionId && index < orderedAnswers.length) {
+      value = orderedAnswers[index];
+      source = "order";
+    } else {
+      continue;
+    }
+
+    mapped.push({ question, value, source });
+  }
+
+  return mapped;
+}
+
+function buildPreviewItems(questionDefs, answers) {
+  const mapped = mapAnswersToQuestions(questionDefs, answers, { allowOrderFallback: true });
+  const mapById = new Map(mapped.map((item) => [item.question.id, item]));
+
+  return questionDefs.map((question) => {
+    const mappedItem = mapById.get(question.id);
+    if (!mappedItem) {
+      return {
+        questionId: question.id,
+        questionText: question.text,
+        type: question.type,
+        source: "none",
+        rawAnswer: null,
+        answerPreview: "",
+        canApply: false,
+        reason: "No answer returned for this question.",
+        mappedOptionIndexes: [],
+        mappedOptionLabels: []
+      };
+    }
+
+    return explainMappedAnswer(question, mappedItem.value, mappedItem.source);
+  });
+}
+
+function explainMappedAnswer(question, value, source) {
+  const base = {
+    questionId: question.id,
+    questionText: question.text,
+    type: question.type,
+    source,
+    rawAnswer: value,
+    answerPreview: formatPreviewAnswer(value),
+    canApply: false,
+    reason: "Answer could not be mapped.",
+    mappedOptionIndexes: [],
+    mappedOptionLabels: []
+  };
+
+  if (question.type === "text" || question.type === "paragraph") {
+    const textAnswer = coerceTextAnswer(value);
+    if (textAnswer) {
+      return {
+        ...base,
+        answerPreview: textAnswer,
+        canApply: true,
+        reason: "Will fill text field."
+      };
+    }
+    return {
+      ...base,
+      answerPreview: "",
+      canApply: false,
+      reason: "Text answer is empty."
+    };
+  }
+
+  if (question.type === "multiple_choice" || question.type === "linear_scale") {
+    const control =
+      question.type === "linear_scale"
+        ? resolveLinearScaleControl(question, value)
+        : resolveSingleChoiceControl(question, value);
+    if (!control) {
+      return {
+        ...base,
+        canApply: false,
+        reason: "No matching option found."
+      };
+    }
+    const index = question.controls.indexOf(control) + 1;
+    const label = getOptionLabelByIndex(question, index);
+    return {
+      ...base,
+      answerPreview: label ? `${index}. ${label}` : String(index),
+      canApply: true,
+      reason: "Will select this option.",
+      mappedOptionIndexes: [index],
+      mappedOptionLabels: label ? [label] : []
+    };
+  }
+
+  if (question.type === "checkbox") {
+    const targets = normalizeCheckboxTargets(value);
+    if (!targets.length) {
+      return {
+        ...base,
+        canApply: false,
+        reason: "No checkbox targets returned."
+      };
+    }
+
+    const controls = resolveCheckboxControls(question, targets);
+    if (!controls.length) {
+      return {
+        ...base,
+        canApply: false,
+        reason: "No checkbox options matched."
+      };
+    }
+
+    if (shouldSkipSelectAllCheckbox(question, controls.length)) {
+      return {
+        ...base,
+        canApply: false,
+        reason: "Looks like select-all checkbox mistake."
+      };
+    }
+
+    const indexes = controls.map((control) => question.controls.indexOf(control) + 1).filter((idx) => idx > 0);
+    const labels = indexes.map((idx) => getOptionLabelByIndex(question, idx)).filter(Boolean);
+    return {
+      ...base,
+      answerPreview: labels.length ? labels.join(", ") : indexes.join(", "),
+      canApply: true,
+      reason: "Will select these checkboxes.",
+      mappedOptionIndexes: indexes,
+      mappedOptionLabels: labels
+    };
+  }
+
+  if (question.type === "dropdown") {
+    const option = resolveDropdownOptionFromQuestionOptions(question, value);
+    if (!option) {
+      return {
+        ...base,
+        canApply: false,
+        reason: "No dropdown option matched."
+      };
+    }
+
+    return {
+      ...base,
+      answerPreview: option.text ? `${option.optionIndex}. ${option.text}` : String(option.optionIndex),
+      canApply: true,
+      reason: "Will select this dropdown option.",
+      mappedOptionIndexes: [option.optionIndex],
+      mappedOptionLabels: option.text ? [option.text] : []
+    };
+  }
+
+  return base;
+}
+
+function getOptionLabelByIndex(question, optionIndex) {
+  const byOption =
+    (question.options || []).find((option) => Number(option.optionIndex) === Number(optionIndex)) || null;
+  if (byOption && String(byOption.text || "").trim()) {
+    return String(byOption.text || "").trim();
+  }
+  const control = question.controls?.[optionIndex - 1] || null;
+  return control ? getControlLabel(control) : "";
+}
+
+function formatPreviewAnswer(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => formatPreviewAnswer(item)).join(", ");
+  }
+  try {
+    return JSON.stringify(value);
+  } catch (_error) {
+    return String(value);
+  }
+}
+
+function resolveDropdownOptionFromQuestionOptions(question, value) {
+  const targets = extractDropdownTargets(value);
+  if (!targets.length || !Array.isArray(question.options)) {
+    return null;
+  }
+  return resolveQuestionOptionFromTarget(question, targets[0]);
+}
+
+function resolveQuestionOptionFromTarget(question, target) {
+  const options = Array.isArray(question.options) ? question.options : [];
+  if (!options.length) {
+    return null;
+  }
+
+  if (typeof target === "number") {
+    const exactNumericText = options.find(
+      (option) => normalize(option.text) === normalize(String(target))
+    );
+    if (exactNumericText) {
+      return exactNumericText;
+    }
+    const idx = coerceOptionIndex(target, options.length);
+    return idx ? options[idx - 1] || null : null;
+  }
+
+  if (typeof target === "string") {
+    const trimmed = target.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalizedTarget = normalize(trimmed);
+    const exactText = options.find((option) => normalize(option.text) === normalizedTarget);
+    if (exactText) {
+      return exactText;
+    }
+    if (/^-?\d+$/.test(trimmed)) {
+      const idx = coerceOptionIndex(Number(trimmed), options.length);
+      if (idx) {
+        return options[idx - 1] || null;
+      }
+    }
+    return (
+      options.find((option) => {
+        const optionText = normalize(option.text);
+        return optionText && (optionText.includes(normalizedTarget) || normalizedTarget.includes(optionText));
+      }) || null
+    );
+  }
+
+  if (target && typeof target === "object") {
+    if (target.optionIndex !== undefined) {
+      const fromIndex = resolveQuestionOptionFromTarget(question, target.optionIndex);
+      if (fromIndex) {
+        return fromIndex;
+      }
+    }
+    if (typeof target.text === "string") {
+      return resolveQuestionOptionFromTarget(question, target.text);
+    }
+  }
+
+  return null;
 }
 
 async function applySingleAnswer(question, value) {

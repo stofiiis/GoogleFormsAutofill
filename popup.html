@@ -16,7 +16,26 @@
         rows="3"
         placeholder="Example: Reply as a senior frontend developer."
       ></textarea>
+      <label class="toggle" for="previewMode">
+        <input id="previewMode" type="checkbox" checked />
+        Preview before fill
+      </label>
       <button id="fillButton">Analyze and Fill</button>
+      <button id="applyButton" hidden disabled>Apply Selected</button>
+
+      <section id="previewSection" class="preview" hidden>
+        <h2>Preview</h2>
+        <p class="hint">Uncheck items you do not want to apply.</p>
+        <div id="previewList" class="preview-list"></div>
+      </section>
+
+      <details id="debugPanel" class="debug">
+        <summary>Debug</summary>
+        <p class="hint">Raw model output and local mapping.</p>
+        <pre id="debugRaw"></pre>
+        <pre id="debugMapping"></pre>
+      </details>
+
       <p id="status" aria-live="polite"></p>
       <a class="link" href="options.html" target="_blank" rel="noopener">Settings</a>
     </main>

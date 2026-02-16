@@ -44,7 +44,7 @@ label {
 }
 
 textarea,
-input {
+input:not([type="checkbox"]) {
   width: 100%;
   box-sizing: border-box;
   padding: 10px;
@@ -91,4 +91,101 @@ button:disabled {
 
 .link:hover {
   text-decoration: underline;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+#applyButton {
+  background: #14532d;
+}
+
+.preview {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  background: #ffffff;
+}
+
+.preview h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.preview-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.preview-item {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.preview-check {
+  margin-top: 2px;
+}
+
+.preview-content {
+  display: grid;
+  gap: 4px;
+}
+
+.preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.preview-answer,
+.preview-reason {
+  font-size: 12px;
+}
+
+.debug {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.debug summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.debug pre {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px;
 }

@@ -101,12 +101,13 @@ async function handleGenerateAnswers(payload) {
   }
 
   const parsed = parseJsonLoose(text);
+  const validated = validateAndNormalizeAnswers(parsed, payload.questions);
 
-  if (!parsed || !Array.isArray(parsed.answers)) {
-    throw new Error("OpenAI response JSON must include an 'answers' array.");
-  }
-
-  return parsed;
+  return {
+    answers: validated.answers,
+    validationIssues: validated.issues,
+    rawModelText: text
+  };
 }
 
 function buildUserContent(payload) {
@@ -293,6 +294,198 @@ function parseJsonLoose(text) {
   }
 
   throw new Error("OpenAI response was not valid JSON.");
+}
+
+function validateAndNormalizeAnswers(parsed, questions) {
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.answers)) {
+    throw new Error("OpenAI response JSON must include an 'answers' array.");
+  }
+
+  const issues = [];
+  const questionById = new Map();
+  for (const question of questions || []) {
+    const questionId = String(question?.questionId || "").trim();
+    if (questionId) {
+      questionById.set(questionId, question);
+    }
+  }
+
+  const seenQuestionIds = new Set();
+  const normalizedAnswers = [];
+
+  for (const item of parsed.answers) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      issues.push("Skipped answer item because it is not an object.");
+      continue;
+    }
+
+    const questionId = String(item.questionId || "").trim();
+    if (!questionId) {
+      issues.push("Skipped answer item without questionId.");
+      continue;
+    }
+    if (!questionById.has(questionId)) {
+      issues.push(`Skipped answer for unknown questionId '${questionId}'.`);
+      continue;
+    }
+    if (seenQuestionIds.has(questionId)) {
+      issues.push(`Duplicate answer for '${questionId}' ignored (kept first).`);
+      continue;
+    }
+
+    const normalized = normalizeAnswerForQuestion(item.answer, questionById.get(questionId));
+    if (!normalized.ok) {
+      issues.push(`questionId '${questionId}': ${normalized.reason}`);
+    }
+
+    normalizedAnswers.push({
+      questionId,
+      answer: normalized.value
+    });
+    seenQuestionIds.add(questionId);
+  }
+
+  for (const questionId of questionById.keys()) {
+    if (!seenQuestionIds.has(questionId)) {
+      normalizedAnswers.push({ questionId, answer: null });
+      issues.push(`questionId '${questionId}' missing in model output, inserted null.`);
+    }
+  }
+
+  if (!normalizedAnswers.length) {
+    throw new Error("OpenAI response did not include any usable answers.");
+  }
+
+  return { answers: normalizedAnswers, issues };
+}
+
+function normalizeAnswerForQuestion(answer, question) {
+  const questionType = String(question?.type || "").trim().toLowerCase();
+
+  if (answer === null || answer === undefined) {
+    return { ok: true, value: null, reason: "answer is null" };
+  }
+
+  if (questionType === "text" || questionType === "paragraph") {
+    const text = normalizeTextAnswer(answer);
+    if (!text) {
+      return { ok: false, value: null, reason: "text answer is empty." };
+    }
+    return { ok: true, value: text };
+  }
+
+  if (questionType === "checkbox") {
+    const normalizedCheckbox = normalizeCheckboxAnswer(answer);
+    if (!normalizedCheckbox.length) {
+      return { ok: false, value: [], reason: "checkbox answer has no valid targets." };
+    }
+    return { ok: true, value: normalizedCheckbox };
+  }
+
+  if (questionType === "multiple_choice" || questionType === "dropdown" || questionType === "linear_scale") {
+    const single = normalizeSingleChoiceAnswer(answer);
+    if (single === null || single === "") {
+      return { ok: false, value: null, reason: "single-choice answer is empty." };
+    }
+    return { ok: true, value: single };
+  }
+
+  return { ok: true, value: answer };
+}
+
+function normalizeTextAnswer(answer) {
+  if (answer === null || answer === undefined) {
+    return "";
+  }
+  if (
+    typeof answer === "string" ||
+    typeof answer === "number" ||
+    typeof answer === "boolean" ||
+    typeof answer === "bigint"
+  ) {
+    return String(answer).trim();
+  }
+  if (Array.isArray(answer)) {
+    const first = answer.map((item) => normalizeTextAnswer(item)).find((item) => item);
+    return first || "";
+  }
+  if (typeof answer === "object") {
+    return (
+      normalizeTextAnswer(answer.answer) ||
+      normalizeTextAnswer(answer.text) ||
+      normalizeTextAnswer(answer.value) ||
+      normalizeTextAnswer(answer.response)
+    );
+  }
+  return "";
+}
+
+function normalizeSingleChoiceAnswer(answer) {
+  if (answer === null || answer === undefined) {
+    return null;
+  }
+  if (typeof answer === "string") {
+    return answer.trim();
+  }
+  if (typeof answer === "number" || typeof answer === "boolean") {
+    return answer;
+  }
+  if (Array.isArray(answer)) {
+    if (!answer.length) {
+      return null;
+    }
+    return normalizeSingleChoiceAnswer(answer[0]);
+  }
+  if (typeof answer === "object") {
+    if (answer.optionIndex !== undefined) {
+      return normalizeSingleChoiceAnswer(answer.optionIndex);
+    }
+    if (answer.answer !== undefined) {
+      return normalizeSingleChoiceAnswer(answer.answer);
+    }
+    if (answer.text !== undefined) {
+      return normalizeSingleChoiceAnswer(answer.text);
+    }
+    if (answer.value !== undefined) {
+      return normalizeSingleChoiceAnswer(answer.value);
+    }
+    if (answer.response !== undefined) {
+      return normalizeSingleChoiceAnswer(answer.response);
+    }
+  }
+  return null;
+}
+
+function normalizeCheckboxAnswer(answer) {
+  if (answer === null || answer === undefined) {
+    return [];
+  }
+  if (Array.isArray(answer)) {
+    return answer.map((item) => normalizeSingleChoiceAnswer(item)).filter((item) => item !== null && item !== "");
+  }
+  if (typeof answer === "object") {
+    if (Array.isArray(answer.answer)) {
+      return normalizeCheckboxAnswer(answer.answer);
+    }
+    if (Array.isArray(answer.optionIndexes)) {
+      return normalizeCheckboxAnswer(answer.optionIndexes);
+    }
+    if (Array.isArray(answer.options)) {
+      return normalizeCheckboxAnswer(answer.options);
+    }
+    if (answer.answer !== undefined) {
+      return normalizeCheckboxAnswer([answer.answer]);
+    }
+    if (answer.value !== undefined) {
+      return normalizeCheckboxAnswer([answer.value]);
+    }
+    if (answer.response !== undefined) {
+      return normalizeCheckboxAnswer([answer.response]);
+    }
+  }
+
+  const single = normalizeSingleChoiceAnswer(answer);
+  return single === null || single === "" ? [] : [single];
 }
 
 async function getSettings() {

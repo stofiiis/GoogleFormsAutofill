@@ -40,8 +40,10 @@ This extension reads questions from a Google Form, sends them to OpenAI API, the
 1. Open a Google Form in Opera.
 2. Click the extension icon.
 3. Add optional instruction (e.g. preferred tone/profile).
-4. Click **Analyze and Fill**.
-5. Or trigger autofill directly with **Ctrl+Shift+Y** (macOS: **Command+Shift+Y**).
+4. Keep **Preview before fill** enabled and click **Analyze (Preview)**.
+5. Review suggested answers, uncheck anything you do not want, then click **Apply Selected**.
+6. Open the **Debug** panel in popup to inspect raw model output and local mapping details.
+7. Or disable preview and use one-click **Analyze and Fill** / shortcut **Ctrl+Shift+Y** (macOS: **Command+Shift+Y**).
 
 You can customize the shortcut in `opera://extensions/shortcuts`.
 
