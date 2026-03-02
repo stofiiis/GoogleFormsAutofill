@@ -42,14 +42,20 @@ async function runAutoFillOnActiveTab() {
     throw new Error("Active tab is not a Google Form.");
   }
 
+  const customInstruction = await getLastInstruction();
   const response = await chrome.tabs.sendMessage(activeTab.id, {
     type: "AUTO_FILL_FORM",
-    customInstruction: ""
+    customInstruction
   });
 
   if (!response?.ok) {
     throw new Error(response?.error || "Auto-fill failed.");
   }
+}
+
+async function getLastInstruction() {
+  const data = await chrome.storage.sync.get({ lastInstructionText: "" });
+  return String(data.lastInstructionText || "").trim();
 }
 
 function isGoogleFormUrl(url) {
