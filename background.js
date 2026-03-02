@@ -1,17 +1,54 @@
 const DEFAULT_MODEL = "gpt-4.1-mini";
 const MAX_IMAGES = 30;
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const OPENAI_TIMEOUT_MS = 30000;
+const OPENAI_MAX_RETRIES = 2;
+const OPENAI_RETRY_BASE_DELAY_MS = 800;
+
+const ANSWERS_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["answers"],
+  properties: {
+    answers: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["questionId", "answer"],
+        properties: {
+          questionId: { type: "string", minLength: 1 },
+          answer: {
+            anyOf: [
+              { type: "string" },
+              { type: "number" },
+              { type: "null" },
+              {
+                type: "array",
+                items: {
+                  anyOf: [{ type: "string" }, { type: "number" }]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+};
 
 chrome.commands.onCommand.addListener((command) => {
   if (command !== "autofill-active-form") {
     return;
   }
 
-  runAutoFillOnActiveTab().catch((error) => {
-    console.error(
-      "[Forms AutoFill] Keyboard shortcut failed:",
-      error instanceof Error ? error.message : String(error)
-    );
-  });
+  runAutoFillOnActiveTab()
+    .then(() => clearCommandBadge())
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[Forms AutoFill] Keyboard shortcut failed:", message);
+      showCommandFailureBadge(message);
+    });
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -85,48 +122,119 @@ async function handleGenerateAnswers(payload) {
   }
 
   const requestContent = buildUserContent(payload);
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${settings.apiKey}`
+  const requestPayload = {
+    model: settings.model || DEFAULT_MODEL,
+    temperature: 0.2,
+    max_output_tokens: computeMaxOutputTokens(payload.questions.length),
+    text: {
+      format: {
+        type: "json_schema",
+        name: "form_answers",
+        schema: ANSWERS_JSON_SCHEMA,
+        strict: true
+      }
     },
-    body: JSON.stringify({
-      model: settings.model || DEFAULT_MODEL,
-      temperature: 0.2,
-      max_output_tokens: 800,
-      input: [
-        {
-          role: "system",
-          content: "You are a form-filling assistant. Output only JSON. Do not include markdown."
-        },
-        {
-          role: "user",
-          content: requestContent
-        }
-      ]
-    })
-  });
-
-  if (!response.ok) {
-    const errText = await safeText(response);
-    throw new Error(`OpenAI API error ${response.status}: ${errText}`);
-  }
-
-  const data = await response.json();
-  const text = extractOutputText(data);
-  if (!text) {
-    throw new Error("OpenAI returned an empty response.");
-  }
-
-  const parsed = parseJsonLoose(text);
+    input: [
+      {
+        role: "system",
+        content: "You are a form-filling assistant. Return valid JSON that matches the provided schema."
+      },
+      {
+        role: "user",
+        content: requestContent
+      }
+    ]
+  };
+  const data = await requestOpenAIJson(requestPayload, settings.apiKey);
+  const parsed = extractOutputJson(data);
   const validated = validateAndNormalizeAnswers(parsed, payload.questions);
+  const rawModelText = extractOutputText(data) || safeJsonStringify(parsed);
 
   return {
     answers: validated.answers,
     validationIssues: validated.issues,
-    rawModelText: text
+    rawModelText
   };
+}
+
+async function requestOpenAIJson(requestPayload, apiKey) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= OPENAI_MAX_RETRIES; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(OPENAI_RESPONSES_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(requestPayload)
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+
+      const errText = await safeText(response);
+      const shouldRetry = isRetryableStatus(response.status) && attempt < OPENAI_MAX_RETRIES;
+      if (!shouldRetry) {
+        throw new Error(`OpenAI API error ${response.status}: ${errText}`);
+      }
+
+      lastError = new Error(`OpenAI temporary error ${response.status}: ${errText}`);
+    } catch (error) {
+      const asError = error instanceof Error ? error : new Error(String(error));
+      if (!isRetryableError(asError) || attempt >= OPENAI_MAX_RETRIES) {
+        throw asError;
+      }
+      lastError = asError;
+    }
+
+    await sleep(OPENAI_RETRY_BASE_DELAY_MS * (attempt + 1));
+  }
+
+  throw lastError || new Error("OpenAI request failed.");
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`OpenAI request timed out after ${Math.round(OPENAI_TIMEOUT_MS / 1000)}s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 409 || status === 429 || (status >= 500 && status <= 599);
+}
+
+function isRetryableError(error) {
+  const message = String(error?.message || "");
+  return /timed out|network|failed to fetch|load failed/i.test(message);
+}
+
+function computeMaxOutputTokens(questionCount) {
+  const count = Number.isFinite(Number(questionCount)) ? Number(questionCount) : 0;
+  const computed = 500 + count * 90;
+  return Math.min(2800, Math.max(900, computed));
+}
+
+function extractOutputJson(responseJson) {
+  if (responseJson && typeof responseJson.output_parsed === "object" && responseJson.output_parsed) {
+    return responseJson.output_parsed;
+  }
+
+  const text = extractOutputText(responseJson);
+  if (!text) {
+    throw new Error("OpenAI returned an empty response.");
+  }
+  return parseJsonLoose(text);
 }
 
 function buildUserContent(payload) {
@@ -279,6 +387,9 @@ function normalizeStringArray(value) {
 }
 
 function extractOutputText(responseJson) {
+  if (typeof responseJson?.output_text === "string" && responseJson.output_text.trim()) {
+    return responseJson.output_text.trim();
+  }
   if (!responseJson || !Array.isArray(responseJson.output)) {
     return "";
   }
@@ -457,7 +568,7 @@ function normalizeSingleChoiceAnswer(answer) {
   if (typeof answer === "string") {
     return answer.trim();
   }
-  if (typeof answer === "number" || typeof answer === "boolean") {
+  if (typeof answer === "number") {
     return answer;
   }
   if (Array.isArray(answer)) {
@@ -523,9 +634,13 @@ async function getSettings() {
     openaiApiKey: "",
     openaiModel: DEFAULT_MODEL
   });
+  const model = String(obj.openaiModel || DEFAULT_MODEL).trim();
+  if (!model || /\s/.test(model) || model.length > 120) {
+    throw new Error("Configured model name is invalid. Use a valid OpenAI model id in Settings.");
+  }
   return {
     apiKey: (obj.openaiApiKey || "").trim(),
-    model: (obj.openaiModel || DEFAULT_MODEL).trim()
+    model
   };
 }
 
@@ -535,4 +650,31 @@ async function safeText(response) {
   } catch (_error) {
     return "Unable to read API error body.";
   }
+}
+
+function safeJsonStringify(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function showCommandFailureBadge(message) {
+  await Promise.allSettled([
+    chrome.action.setBadgeText({ text: "!" }),
+    chrome.action.setBadgeBackgroundColor({ color: "#991b1b" }),
+    chrome.action.setTitle({ title: `Forms AutoFill: ${String(message || "shortcut failed")}` })
+  ]);
+}
+
+async function clearCommandBadge() {
+  await Promise.allSettled([
+    chrome.action.setBadgeText({ text: "" }),
+    chrome.action.setTitle({ title: "Forms AutoFill" })
+  ]);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
