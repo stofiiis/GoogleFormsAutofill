@@ -597,14 +597,16 @@ async function applySingleAnswer(question, value) {
       return false;
     }
 
-    let changed = false;
-    for (const control of controlsToSelect) {
-      if (!isChecked(control)) {
-        const selected = await clickControl(control);
-        changed = selected || isChecked(control) || changed;
+    const targetSet = new Set(controlsToSelect);
+    for (const control of question.controls) {
+      const shouldBeChecked = targetSet.has(control);
+      if (isChecked(control) === shouldBeChecked) {
+        continue;
       }
+      await clickControl(control, shouldBeChecked);
     }
-    return changed;
+
+    return question.controls.every((control) => isChecked(control) === targetSet.has(control));
   }
 
   if (question.type === "dropdown") {
@@ -643,7 +645,7 @@ function setTextValue(element, value) {
   element.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-async function clickControl(control) {
+async function clickControl(control, expectedChecked = true) {
   const targets = getUniqueElements([
     control,
     control.closest('[role="radio"]'),
@@ -654,28 +656,28 @@ async function clickControl(control) {
 
   for (const target of targets) {
     clickElement(target);
-    if (await waitForChecked(control, 220)) {
+    if (await waitForCheckedState(control, expectedChecked, 220)) {
       return true;
     }
     if (target !== control) {
       clickElement(control);
-      if (await waitForChecked(control, 220)) {
+      if (await waitForCheckedState(control, expectedChecked, 220)) {
         return true;
       }
     }
   }
 
   sendControlKey(control, " ");
-  if (await waitForChecked(control, 220)) {
+  if (await waitForCheckedState(control, expectedChecked, 220)) {
     return true;
   }
 
   sendControlKey(control, "Enter");
-  if (await waitForChecked(control, 220)) {
+  if (await waitForCheckedState(control, expectedChecked, 220)) {
     return true;
   }
 
-  return isChecked(control);
+  return isChecked(control) === expectedChecked;
 }
 
 function clickElement(element) {
@@ -1335,15 +1337,15 @@ function sendControlKey(control, key) {
   control.dispatchEvent(new KeyboardEvent("keyup", { key, code, bubbles: true }));
 }
 
-async function waitForChecked(control, timeoutMs) {
+async function waitForCheckedState(control, expectedChecked, timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (isChecked(control)) {
+    if (isChecked(control) === expectedChecked) {
       return true;
     }
     await sleep(20);
   }
-  return isChecked(control);
+  return isChecked(control) === expectedChecked;
 }
 
 function createQuestionId(text, index) {
