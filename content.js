@@ -946,9 +946,15 @@ async function applyDropdownAnswer(question, value) {
     return false;
   }
 
+  const expectedLabel = normalize(getDropdownOptionLabel(selected));
   clickElement(selected);
-  await sleep(30);
-  return true;
+  await sleep(60);
+
+  if (!expectedLabel) {
+    return true;
+  }
+
+  return isDropdownSelectionApplied(question.element, expectedLabel);
 }
 
 function extractDropdownTargets(value) {
@@ -1131,6 +1137,29 @@ function getDropdownOptionLabel(optionElement) {
     optionElement.querySelector(".MocG8c")?.textContent ||
     optionElement.textContent;
   return String(text || "").trim();
+}
+
+async function isDropdownSelectionApplied(dropdownControl, expectedLabel) {
+  try {
+    const options = await openDropdownOptions(dropdownControl);
+    if (!options.length) {
+      closeDropdownMenu();
+      return false;
+    }
+
+    const selectedOption = options.find((option) => option.getAttribute("aria-selected") === "true");
+    closeDropdownMenu();
+    await sleep(20);
+
+    if (!selectedOption) {
+      return false;
+    }
+
+    return normalize(getDropdownOptionLabel(selectedOption)) === expectedLabel;
+  } catch (_error) {
+    closeDropdownMenu();
+    return false;
+  }
 }
 
 function looksLikeLinearScale(options, controls) {
