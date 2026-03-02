@@ -198,7 +198,7 @@ async function collectQuestions() {
         element: item,
         controls: radioButtons,
         options,
-        imageUrls: questionImages
+        imageUrls: removeOptionImageUrls(questionImages, options)
       });
       continue;
     }
@@ -216,7 +216,7 @@ async function collectQuestions() {
         element: item,
         controls: checkboxes,
         options,
-        imageUrls: questionImages
+        imageUrls: removeOptionImageUrls(questionImages, options)
       });
       continue;
     }
@@ -1426,6 +1426,28 @@ function mergeImageUrls(...lists) {
     }
   }
   return Array.from(urls).slice(0, 10);
+}
+
+function removeOptionImageUrls(questionImageUrls, options) {
+  if (!Array.isArray(questionImageUrls) || questionImageUrls.length === 0) {
+    return [];
+  }
+
+  const optionImageUrls = new Set();
+  for (const option of options || []) {
+    for (const url of option?.imageUrls || []) {
+      const cleanUrl = String(url || "").trim();
+      if (isUsableImageUrl(cleanUrl)) {
+        optionImageUrls.add(cleanUrl);
+      }
+    }
+  }
+
+  if (!optionImageUrls.size) {
+    return questionImageUrls;
+  }
+
+  return questionImageUrls.filter((url) => !optionImageUrls.has(String(url || "").trim()));
 }
 
 function normalize(value) {
