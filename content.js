@@ -137,8 +137,14 @@ async function collectQuestions() {
     const questionText = getQuestionText(item);
     const itemImages = extractImageUrls(item);
 
-    const textInput = item.querySelector('input[type="text"]:not([aria-label="Search"])');
-    const textarea = item.querySelector("textarea");
+    const textInput =
+      Array.from(item.querySelectorAll('input[type="text"]:not([aria-label="Search"])')).find(
+        (control) => isElementVisible(control) && control.getAttribute("aria-disabled") !== "true"
+      ) || null;
+    const textarea =
+      Array.from(item.querySelectorAll("textarea")).find(
+        (control) => isElementVisible(control) && control.getAttribute("aria-disabled") !== "true"
+      ) || null;
     const dropdownControl = findDropdownControl(item);
     const radioButtons = Array.from(item.querySelectorAll('[role="radio"]')).filter((control) =>
       isSelectableControl(control)
@@ -164,30 +170,6 @@ async function collectQuestions() {
     const questionId = createQuestionId(finalQuestionText, results.length);
     pendingContextText = "";
     pendingContextImages = [];
-
-    if (textInput) {
-      results.push({
-        id: questionId,
-        text: finalQuestionText,
-        type: "text",
-        element: textInput,
-        options: [],
-        imageUrls: questionImages
-      });
-      continue;
-    }
-
-    if (textarea) {
-      results.push({
-        id: questionId,
-        text: finalQuestionText,
-        type: "paragraph",
-        element: textarea,
-        options: [],
-        imageUrls: questionImages
-      });
-      continue;
-    }
 
     if (dropdownControl) {
       const options = await collectDropdownOptions(dropdownControl);
@@ -234,6 +216,30 @@ async function collectQuestions() {
         element: item,
         controls: checkboxes,
         options,
+        imageUrls: questionImages
+      });
+      continue;
+    }
+
+    if (textInput) {
+      results.push({
+        id: questionId,
+        text: finalQuestionText,
+        type: "text",
+        element: textInput,
+        options: [],
+        imageUrls: questionImages
+      });
+      continue;
+    }
+
+    if (textarea) {
+      results.push({
+        id: questionId,
+        text: finalQuestionText,
+        type: "paragraph",
+        element: textarea,
+        options: [],
         imageUrls: questionImages
       });
     }
