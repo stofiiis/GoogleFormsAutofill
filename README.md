@@ -20,6 +20,7 @@ This extension reads questions from a Google Form, sends them to OpenAI API, the
 - Image analysis depends on image URLs being accessible to OpenAI (private/protected URLs may fail).
 - CAPTCHA/anti-bot protections cannot be bypassed.
 - API key is stored in extension storage on your browser profile, not server-side.
+- Instruction text is stored in local extension storage (for better write-rate reliability).
 
 ## Install in Opera
 
@@ -33,6 +34,7 @@ This extension reads questions from a Google Form, sends them to OpenAI API, the
 1. Open extension details and click **Options** (or use the popup Settings link).
 2. Paste your OpenAI API key.
 3. Optionally change model (default: `gpt-4.1-mini`, should support vision for photo questions).
+   Model id must not contain spaces.
 4. Save.
 
 ## Use

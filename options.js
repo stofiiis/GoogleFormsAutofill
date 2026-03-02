@@ -13,6 +13,9 @@ saveButton.addEventListener("click", async () => {
   try {
     const apiKey = apiKeyEl.value.trim();
     const model = modelEl.value.trim() || DEFAULT_MODEL;
+    if (!isValidModelId(model)) {
+      throw new Error("Model id is invalid. Use a value like 'gpt-4.1-mini'.");
+    }
     await chrome.storage.sync.set({
       openaiApiKey: apiKey,
       openaiModel: model
@@ -35,4 +38,9 @@ async function initialize() {
 function setStatus(message, isError) {
   statusEl.textContent = message;
   statusEl.className = isError ? "error" : "success";
+}
+
+function isValidModelId(model) {
+  const candidate = String(model || "").trim();
+  return Boolean(candidate) && !/\s/.test(candidate) && candidate.length <= 120;
 }
