@@ -229,16 +229,27 @@ function normalizeOptionIndex(value, fallback) {
 }
 
 function countAllImageUrls(questions) {
-  let count = 0;
+  const uniqueUrls = new Set();
   for (const question of questions) {
-    count += normalizeStringArray(question?.questionImages).length;
+    for (const url of normalizeStringArray(question?.questionImages)) {
+      const cleanUrl = String(url || "").trim();
+      if (/^https?:\/\//i.test(cleanUrl)) {
+        uniqueUrls.add(cleanUrl);
+      }
+    }
+
     if (Array.isArray(question?.options)) {
       for (const option of question.options) {
-        count += normalizeStringArray(option?.imageUrls).length;
+        for (const url of normalizeStringArray(option?.imageUrls)) {
+          const cleanUrl = String(url || "").trim();
+          if (/^https?:\/\//i.test(cleanUrl)) {
+            uniqueUrls.add(cleanUrl);
+          }
+        }
       }
     }
   }
-  return count;
+  return uniqueUrls.size;
 }
 
 function normalizeStringArray(value) {
