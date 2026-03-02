@@ -40,6 +40,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
+const CONTROL_STATE_TIMEOUT_MS = 700;
+const DROPDOWN_OPEN_TIMEOUT_MS = 3000;
+const DROPDOWN_OPEN_INTERVAL_MS = 50;
+const DROPDOWN_AFTER_CLICK_DELAY_MS = 120;
+
 async function autoFillForm(customInstruction) {
   const prepared = await prepareAnswers(customInstruction);
   const applied = await applyAnswers(prepared.questions, prepared.answers);
@@ -152,8 +157,15 @@ async function collectQuestions() {
     const checkboxes = Array.from(item.querySelectorAll('[role="checkbox"]')).filter((control) =>
       isSelectableControl(control)
     );
+    const unsupportedType = detectUnsupportedQuestionType(item);
     const isInteractive =
       Boolean(textInput || textarea || dropdownControl) || radioButtons.length > 0 || checkboxes.length > 0;
+
+    if (unsupportedType) {
+      pendingContextText = "";
+      pendingContextImages = [];
+      continue;
+    }
 
     if (!isInteractive) {
       if (questionText) {
@@ -407,13 +419,7 @@ function explainMappedAnswer(question, value, source) {
       };
     }
 
-    if (shouldSkipSelectAllCheckbox(question, controls.length)) {
-      return {
-        ...base,
-        canApply: false,
-        reason: "Looks like select-all checkbox mistake."
-      };
-    }
+    const suspiciousSelectAll = isSuspiciousSelectAllCheckbox(question, controls.length);
 
     const indexes = controls.map((control) => question.controls.indexOf(control) + 1).filter((idx) => idx > 0);
     const labels = indexes.map((idx) => getOptionLabelByIndex(question, idx)).filter(Boolean);
@@ -421,7 +427,9 @@ function explainMappedAnswer(question, value, source) {
       ...base,
       answerPreview: labels.length ? labels.join(", ") : indexes.join(", "),
       canApply: true,
-      reason: "Will select these checkboxes.",
+      reason: suspiciousSelectAll
+        ? "Will select all checkboxes (review recommended)."
+        : "Will select these checkboxes.",
       mappedOptionIndexes: indexes,
       mappedOptionLabels: labels
     };
@@ -502,6 +510,9 @@ function resolveQuestionOptionFromTarget(question, target) {
   if (!options.length) {
     return null;
   }
+  if (typeof target === "boolean") {
+    return null;
+  }
 
   if (typeof target === "number") {
     const exactNumericText = options.find(
@@ -559,8 +570,7 @@ async function applySingleAnswer(question, value) {
     if (textAnswer === null || textAnswer === "") {
       return false;
     }
-    setTextValue(question.element, textAnswer);
-    return true;
+    return setTextValue(question.element, textAnswer);
   }
 
   if (question.type === "multiple_choice") {
@@ -599,10 +609,6 @@ async function applySingleAnswer(question, value) {
 
     const controlsToSelect = resolveCheckboxControls(question, targets);
     if (!controlsToSelect.length) {
-      return false;
-    }
-
-    if (shouldSkipSelectAllCheckbox(question, controlsToSelect.length)) {
       return false;
     }
 
@@ -649,9 +655,49 @@ function normalizeModelAnswer(answerItem) {
 
 function setTextValue(element, value) {
   element.focus();
-  element.value = value;
+  setNativeInputValue(element, value);
   element.dispatchEvent(new Event("input", { bubbles: true }));
   element.dispatchEvent(new Event("change", { bubbles: true }));
+  element.dispatchEvent(new Event("blur", { bubbles: true }));
+  return isTextAnswerApplied(element, value);
+}
+
+function setNativeInputValue(element, value) {
+  const proto =
+    element instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : element instanceof HTMLInputElement
+        ? HTMLInputElement.prototype
+        : null;
+  const setter = proto ? Object.getOwnPropertyDescriptor(proto, "value")?.set : null;
+  if (setter) {
+    setter.call(element, value);
+    return;
+  }
+  element.value = value;
+}
+
+function isTextAnswerApplied(element, expectedValue) {
+  const expected = String(expectedValue || "").trim();
+  const actual = String(element?.value || "").trim();
+  if (!expected || actual !== expected) {
+    return false;
+  }
+  return !hasInvalidTextInputState(element);
+}
+
+function hasInvalidTextInputState(element) {
+  if (element?.getAttribute("aria-invalid") === "true") {
+    return true;
+  }
+  if (typeof element?.checkValidity === "function") {
+    try {
+      return !element.checkValidity();
+    } catch (_error) {
+      return false;
+    }
+  }
+  return false;
 }
 
 async function clickControl(control, expectedChecked = true) {
@@ -665,24 +711,24 @@ async function clickControl(control, expectedChecked = true) {
 
   for (const target of targets) {
     clickElement(target);
-    if (await waitForCheckedState(control, expectedChecked, 220)) {
+    if (await waitForCheckedState(control, expectedChecked, CONTROL_STATE_TIMEOUT_MS)) {
       return true;
     }
     if (target !== control) {
       clickElement(control);
-      if (await waitForCheckedState(control, expectedChecked, 220)) {
+      if (await waitForCheckedState(control, expectedChecked, CONTROL_STATE_TIMEOUT_MS)) {
         return true;
       }
     }
   }
 
   sendControlKey(control, " ");
-  if (await waitForCheckedState(control, expectedChecked, 220)) {
+  if (await waitForCheckedState(control, expectedChecked, CONTROL_STATE_TIMEOUT_MS)) {
     return true;
   }
 
   sendControlKey(control, "Enter");
-  if (await waitForCheckedState(control, expectedChecked, 220)) {
+  if (await waitForCheckedState(control, expectedChecked, CONTROL_STATE_TIMEOUT_MS)) {
     return true;
   }
 
@@ -702,6 +748,9 @@ function isChecked(control) {
 function resolveSingleChoiceControl(question, value) {
   if (Array.isArray(value) && value.length > 0) {
     return resolveSingleChoiceControl(question, value[0]);
+  }
+  if (typeof value === "boolean") {
+    return null;
   }
   if (value && typeof value === "object") {
     if (value.answer !== undefined) {
@@ -782,11 +831,14 @@ function normalizeCheckboxTargets(value) {
   } else if (value !== undefined) {
     rawTargets.push(value);
   }
-  return rawTargets;
+  return rawTargets.filter((target) => target !== null && target !== undefined && typeof target !== "boolean");
 }
 
 function resolveControlFromTarget(question, target, usedIndexes) {
   let control = null;
+  if (typeof target === "boolean") {
+    return null;
+  }
 
   if (typeof target === "number") {
     control = resolveControlByExactText(question, String(target)) || resolveControlByIndex(question, target);
@@ -832,9 +884,9 @@ function resolveCheckboxControls(question, targets) {
   return controls;
 }
 
-function shouldSkipSelectAllCheckbox(question, selectedCount) {
+function isSuspiciousSelectAllCheckbox(question, selectedCount) {
   const total = question?.controls?.length || 0;
-  if (total < 3 || selectedCount !== total) {
+  if (total < 5 || selectedCount !== total) {
     return false;
   }
 
@@ -851,6 +903,11 @@ function shouldSkipSelectAllCheckbox(question, selectedCount) {
     /\bzaskrtnete vsechny\b/
   ];
   if (allowAllPatterns.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+
+  const optionText = normalize((question?.options || []).map((option) => option?.text || "").join(" "));
+  if (/\ball of the above\b|\bnone of the above\b|\bvsechny moznosti\b|\bzadna z moznosti\b/.test(optionText)) {
     return false;
   }
 
@@ -957,7 +1014,7 @@ async function applyDropdownAnswer(question, value) {
 
   const expectedLabel = normalize(getDropdownOptionLabel(selected));
   clickElement(selected);
-  await sleep(60);
+  await sleep(DROPDOWN_AFTER_CLICK_DELAY_MS);
 
   if (!expectedLabel) {
     return true;
@@ -1001,6 +1058,9 @@ function extractDropdownTargets(value) {
 }
 
 function resolveDropdownOption(optionElements, target) {
+  if (typeof target === "boolean") {
+    return null;
+  }
   if (typeof target === "number") {
     return (
       resolveDropdownOptionByExactText(optionElements, String(target)) ||
@@ -1120,12 +1180,12 @@ async function collectDropdownOptions(dropdownControl) {
 async function openDropdownOptions(dropdownControl) {
   dropdownControl.focus();
   clickElement(dropdownControl);
-  await sleep(30);
+  await sleep(DROPDOWN_AFTER_CLICK_DELAY_MS);
 
   const options = await waitFor(() => {
     const visible = getVisibleDropdownOptions();
     return visible.length ? visible : null;
-  }, 1400, 40);
+  }, DROPDOWN_OPEN_TIMEOUT_MS, DROPDOWN_OPEN_INTERVAL_MS);
 
   return options || [];
 }
@@ -1141,7 +1201,18 @@ function getVisibleDropdownOptions() {
 }
 
 function getDropdownOptionLabel(optionElement) {
+  const aria = String(optionElement?.getAttribute("aria-label") || "").trim();
+  if (aria) {
+    return aria;
+  }
+
+  const labelled = getAriaLabelledText(optionElement);
+  if (labelled) {
+    return labelled;
+  }
+
   const text =
+    optionElement.querySelector('[dir="auto"]')?.textContent ||
     optionElement.querySelector(".vRMGwf")?.textContent ||
     optionElement.querySelector(".MocG8c")?.textContent ||
     optionElement.textContent;
@@ -1226,15 +1297,74 @@ function extractNumericValue(value) {
   return Number.isFinite(parsed) ? Math.round(parsed) : null;
 }
 
-function getQuestionText(container) {
-  const heading =
-    container.querySelector('[role="heading"]') ||
-    container.querySelector(".M7eMe") ||
-    container.querySelector(".HoXoMd");
-  if (!heading) {
+function detectUnsupportedQuestionType(item) {
+  const hasVisibleDateOrTime = Array.from(
+    item.querySelectorAll('input[type="date"], input[type="time"], input[type="datetime-local"]')
+  ).some((control) => isElementVisible(control) && control.getAttribute("aria-disabled") !== "true");
+  if (hasVisibleDateOrTime) {
+    return "date_time";
+  }
+
+  const hasFileUpload = Array.from(item.querySelectorAll('input[type="file"]')).some((control) =>
+    isElementVisible(control)
+  );
+  if (hasFileUpload) {
+    return "file_upload";
+  }
+
+  const radioGroups = Array.from(item.querySelectorAll('[role="radiogroup"]')).filter((group) =>
+    isElementVisible(group)
+  );
+  if (radioGroups.length > 1) {
+    return "multiple_choice_grid";
+  }
+
+  const checkboxGroups = Array.from(item.querySelectorAll('[role="group"]')).filter(
+    (group) => isElementVisible(group) && group.querySelector('[role="checkbox"]')
+  );
+  if (checkboxGroups.length > 1) {
+    return "checkbox_grid";
+  }
+
+  return null;
+}
+
+function getAriaLabelledText(element) {
+  const ids = String(element?.getAttribute("aria-labelledby") || "")
+    .split(/\s+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (!ids.length) {
     return "";
   }
-  return heading.textContent?.trim() || "";
+
+  const parts = [];
+  for (const id of ids) {
+    const target = document.getElementById(id);
+    const text = String(target?.textContent || "").trim();
+    if (text) {
+      parts.push(text);
+    }
+  }
+  return parts.join(" ").trim();
+}
+
+function getQuestionText(container) {
+  const selectors = ['[role="heading"]', '[aria-level="3"]', '[aria-level="2"]', ".M7eMe", ".HoXoMd"];
+  for (const selector of selectors) {
+    const candidate = container.querySelector(selector);
+    const text = String(candidate?.textContent || "").trim();
+    if (text) {
+      return text;
+    }
+  }
+
+  const labelled = getAriaLabelledText(container);
+  if (labelled) {
+    return labelled;
+  }
+
+  return "";
 }
 
 function getControlLabel(control) {
@@ -1243,7 +1373,23 @@ function getControlLabel(control) {
     return aria;
   }
 
+  const labelled = getAriaLabelledText(control);
+  if (labelled) {
+    return labelled;
+  }
+
+  const dataValue = String(control.getAttribute("data-value") || "").trim();
+  if (dataValue) {
+    return dataValue;
+  }
+
   const labelContainer = getControlContainer(control);
+  const textNode = labelContainer?.querySelector('[dir="auto"]');
+  const textNodeText = String(textNode?.textContent || "").trim();
+  if (textNodeText) {
+    return textNodeText;
+  }
+
   const candidates = [
     labelContainer?.querySelector(".aDTYNe"),
     labelContainer?.querySelector(".ulDsOb"),
