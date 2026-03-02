@@ -430,10 +430,19 @@ function explainMappedAnswer(question, value, source) {
   if (question.type === "dropdown") {
     const option = resolveDropdownOptionFromQuestionOptions(question, value);
     if (!option) {
+      const targets = extractDropdownTargets(value);
+      if (!targets.length) {
+        return {
+          ...base,
+          canApply: false,
+          reason: "No dropdown option matched."
+        };
+      }
       return {
         ...base,
-        canApply: false,
-        reason: "No dropdown option matched."
+        answerPreview: formatPreviewAnswer(targets[0]),
+        canApply: true,
+        reason: "Will try selecting this dropdown option."
       };
     }
 
