@@ -40,7 +40,7 @@ const BUILTIN_TEMPLATES = [
 let lastPreview = null;
 let customTemplates = [];
 let selectedTemplateId = BUILTIN_TEMPLATE_ID;
-let persistTimer = null;
+let persistInstructionTimer = null;
 
 initialize().catch((error) => {
   setStatus(error instanceof Error ? error.message : String(error), true);
@@ -80,7 +80,7 @@ instructionEl.addEventListener("input", () => {
     resetPreview();
     setStatus("Instruction changed. Analyze again to refresh preview.", false);
   }
-  schedulePersistTemplateState();
+  schedulePersistInstructionState();
 });
 
 previewListEl.addEventListener("change", () => {
@@ -92,7 +92,7 @@ fillButton.addEventListener("click", async () => {
   setWorking(true);
   try {
     const activeTab = await getActiveGoogleFormTab();
-    await persistTemplateState();
+    await persistInstructionText();
     if (previewModeEl.checked) {
       await runPreview(activeTab.id);
     } else {
@@ -150,20 +150,31 @@ async function initialize() {
 }
 
 async function loadTemplateState() {
-  const data = await chrome.storage.sync.get({
-    instructionTemplates: [],
-    selectedInstructionTemplateId: BUILTIN_TEMPLATE_ID,
-    lastInstructionText: ""
-  });
+  const [syncData, localData] = await Promise.all([
+    chrome.storage.sync.get({
+      instructionTemplates: [],
+      selectedInstructionTemplateId: BUILTIN_TEMPLATE_ID,
+      lastInstructionText: ""
+    }),
+    chrome.storage.local.get({
+      lastInstructionText: ""
+    })
+  ]);
 
-  customTemplates = normalizeCustomTemplates(data.instructionTemplates);
-  selectedTemplateId = resolveTemplateId(data.selectedInstructionTemplateId);
+  customTemplates = normalizeCustomTemplates(syncData.instructionTemplates);
+  selectedTemplateId = resolveTemplateId(syncData.selectedInstructionTemplateId);
   renderTemplateOptions();
 
   const selectedTemplate = getTemplateById(selectedTemplateId);
-  const savedInstruction = String(data.lastInstructionText || "");
+  const localInstruction = String(localData.lastInstructionText || "");
+  const syncInstruction = String(syncData.lastInstructionText || "");
+  const savedInstruction = localInstruction || syncInstruction;
   instructionEl.value = savedInstruction || selectedTemplate?.text || "";
   templateSelectEl.value = selectedTemplateId;
+
+  if (!localInstruction && syncInstruction) {
+    await persistInstructionText();
+  }
 }
 
 function normalizeCustomTemplates(value) {
@@ -240,7 +251,7 @@ async function applySelectedTemplate() {
   instructionEl.value = template?.text || "";
   updateTemplateButtons();
   resetPreview();
-  await persistTemplateState();
+  await Promise.all([persistTemplateState(), persistInstructionText()]);
   setStatus(`Template '${template?.name || "No template"}' loaded.`, false);
 }
 
@@ -279,7 +290,7 @@ async function saveCurrentAsTemplate() {
   templateSelectEl.value = selectedTemplateId;
   templateNameEl.value = "";
   updateTemplateButtons();
-  await persistTemplateState();
+  await Promise.all([persistTemplateState(), persistInstructionText()]);
 }
 
 async function deleteSelectedTemplate() {
@@ -294,7 +305,7 @@ async function deleteSelectedTemplate() {
   instructionEl.value = getTemplateById(selectedTemplateId)?.text || "";
   updateTemplateButtons();
   resetPreview();
-  await persistTemplateState();
+  await Promise.all([persistTemplateState(), persistInstructionText()]);
   setStatus("Custom template deleted.", false);
 }
 
@@ -304,21 +315,26 @@ function updateTemplateButtons() {
   deleteTemplateButton.disabled = !isCustom;
 }
 
-function schedulePersistTemplateState() {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
+function schedulePersistInstructionState() {
+  if (persistInstructionTimer) {
+    clearTimeout(persistInstructionTimer);
   }
-  persistTimer = setTimeout(() => {
-    persistTemplateState().catch(() => {
+  persistInstructionTimer = setTimeout(() => {
+    persistInstructionText().catch(() => {
       // ignore storage write issues in background updates
     });
-  }, 150);
+  }, 300);
 }
 
 async function persistTemplateState() {
   await chrome.storage.sync.set({
     instructionTemplates: customTemplates,
-    selectedInstructionTemplateId: selectedTemplateId,
+    selectedInstructionTemplateId: selectedTemplateId
+  });
+}
+
+async function persistInstructionText() {
+  await chrome.storage.local.set({
     lastInstructionText: instructionEl.value
   });
 }

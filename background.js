@@ -54,8 +54,21 @@ async function runAutoFillOnActiveTab() {
 }
 
 async function getLastInstruction() {
-  const data = await chrome.storage.sync.get({ lastInstructionText: "" });
-  return String(data.lastInstructionText || "").trim();
+  const [localData, syncData] = await Promise.all([
+    chrome.storage.local.get({ lastInstructionText: "" }),
+    chrome.storage.sync.get({ lastInstructionText: "" })
+  ]);
+
+  const localInstruction = String(localData.lastInstructionText || "").trim();
+  if (localInstruction) {
+    return localInstruction;
+  }
+
+  const syncInstruction = String(syncData.lastInstructionText || "").trim();
+  if (syncInstruction) {
+    await chrome.storage.local.set({ lastInstructionText: syncInstruction });
+  }
+  return syncInstruction;
 }
 
 function isGoogleFormUrl(url) {
