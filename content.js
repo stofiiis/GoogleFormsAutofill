@@ -138,11 +138,12 @@ async function prepareAnswers(customInstruction) {
 async function collectQuestions() {
   const listItems = document.querySelectorAll('[role="listitem"]');
   const results = [];
-  let pendingContextText = "";
+  let pendingContextParts = [];
   let pendingContextImages = [];
 
   for (const item of listItems) {
     const questionText = getQuestionText(item);
+    const questionDescription = getQuestionDescription(item);
     const itemImages = extractImageUrls(item);
 
     const textInput =
@@ -165,15 +166,13 @@ async function collectQuestions() {
       Boolean(textInput || textarea || dropdownControl) || radioButtons.length > 0 || checkboxes.length > 0;
 
     if (unsupportedType) {
-      pendingContextText = "";
+      pendingContextParts = [];
       pendingContextImages = [];
       continue;
     }
 
     if (!isInteractive) {
-      if (questionText) {
-        pendingContextText = questionText;
-      }
+      pendingContextParts = mergeTextParts(pendingContextParts, [questionText, questionDescription]);
       if (itemImages.length > 0) {
         pendingContextImages = mergeImageUrls(pendingContextImages, itemImages);
       }
@@ -181,9 +180,13 @@ async function collectQuestions() {
     }
 
     const questionImages = mergeImageUrls(itemImages, pendingContextImages);
-    const finalQuestionText = composeQuestionText(questionText, pendingContextText, results.length + 1);
+    const finalQuestionText = composeQuestionText(
+      questionText,
+      mergeTextParts(pendingContextParts, [questionDescription]),
+      results.length + 1
+    );
     const questionId = createQuestionId(finalQuestionText, results.length);
-    pendingContextText = "";
+    pendingContextParts = [];
     pendingContextImages = [];
 
     if (dropdownControl) {
@@ -1356,7 +1359,7 @@ function getQuestionText(container) {
   const selectors = ['[role="heading"]', '[aria-level="3"]', '[aria-level="2"]', ".M7eMe", ".HoXoMd"];
   for (const selector of selectors) {
     const candidate = container.querySelector(selector);
-    const text = String(candidate?.textContent || "").trim();
+    const text = cleanVisibleText(candidate?.textContent);
     if (text) {
       return text;
     }
@@ -1364,10 +1367,52 @@ function getQuestionText(container) {
 
   const labelled = getAriaLabelledText(container);
   if (labelled) {
-    return labelled;
+    return cleanVisibleText(labelled);
   }
 
   return "";
+}
+
+function getQuestionDescription(container) {
+  const title = normalize(getQuestionText(container));
+  const optionTexts = collectOptionTextCandidates(container);
+  const seen = new Set();
+  const parts = [];
+  const candidates = container.querySelectorAll('[dir="auto"], [role="note"], .gubaDc, .Ih4aUb, .M7eMe, .HoXoMd');
+
+  for (const candidate of candidates) {
+    if (!isElementVisible(candidate)) {
+      continue;
+    }
+    if (candidate.closest('input, textarea, [role="radio"], [role="checkbox"], [role="option"], [role="listbox"]')) {
+      continue;
+    }
+
+    const text = cleanVisibleText(candidate.textContent);
+    const normalizedText = normalize(text);
+    if (!normalizedText || normalizedText === title || optionTexts.has(normalizedText) || seen.has(normalizedText)) {
+      continue;
+    }
+
+    seen.add(normalizedText);
+    parts.push(text);
+  }
+
+  return parts.join("\n");
+}
+
+function collectOptionTextCandidates(container) {
+  const labels = new Set();
+  const controls = container.querySelectorAll('[role="radio"], [role="checkbox"], [role="option"]');
+  for (const control of controls) {
+    const label =
+      control.getAttribute("role") === "option" ? getDropdownOptionLabel(control) : getControlLabel(control);
+    const normalizedLabel = normalize(label);
+    if (normalizedLabel) {
+      labels.add(normalizedLabel);
+    }
+  }
+  return labels;
 }
 
 function getControlLabel(control) {
@@ -1428,16 +1473,28 @@ function extractImageUrls(container) {
     urls.add(src);
   }
 
-  const backgroundCandidates = [container, ...container.querySelectorAll('[style*="background"]')];
+  const backgroundCandidates = [container, ...container.querySelectorAll("*")];
   for (const element of backgroundCandidates) {
-    const inlineStyle = String(element.getAttribute("style") || "");
-    if (!inlineStyle || !isLikelyQuestionImageElement(element)) {
+    if (!isLikelyQuestionImageElement(element)) {
       continue;
     }
-    const backgroundUrls = extractUrlsFromCssValue(inlineStyle);
-    for (const url of backgroundUrls) {
-      if (isUsableImageUrl(url)) {
-        urls.add(url);
+
+    const styleValues = [String(element.getAttribute("style") || "")];
+    try {
+      styleValues.push(String(window.getComputedStyle(element).backgroundImage || ""));
+    } catch (_error) {
+      // ignore computed-style access issues
+    }
+
+    for (const styleValue of styleValues) {
+      if (!styleValue) {
+        continue;
+      }
+      const backgroundUrls = extractUrlsFromCssValue(styleValue);
+      for (const url of backgroundUrls) {
+        if (isUsableImageUrl(url)) {
+          urls.add(url);
+        }
       }
     }
   }
@@ -1546,9 +1603,10 @@ function createQuestionId(text, index) {
   return `${slug || "question"}-${index + 1}`;
 }
 
-function composeQuestionText(questionText, contextText, fallbackIndex) {
-  const baseText = String(questionText || "").trim();
-  const extraContext = String(contextText || "").trim();
+function composeQuestionText(questionText, contextParts, fallbackIndex) {
+  const baseText = cleanVisibleText(questionText);
+  const extraContextParts = mergeTextParts(contextParts).filter((part) => normalize(part) !== normalize(baseText));
+  const extraContext = extraContextParts.join(" | ");
   if (!baseText && !extraContext) {
     return `Image question ${fallbackIndex}`;
   }
@@ -1559,6 +1617,24 @@ function composeQuestionText(questionText, contextText, fallbackIndex) {
     return baseText;
   }
   return `${baseText}\nContext: ${extraContext}`;
+}
+
+function mergeTextParts(...lists) {
+  const parts = [];
+  const seen = new Set();
+  for (const list of lists) {
+    const values = Array.isArray(list) ? list : [list];
+    for (const value of values) {
+      const text = cleanVisibleText(value);
+      const normalizedText = normalize(text);
+      if (!normalizedText || seen.has(normalizedText)) {
+        continue;
+      }
+      seen.add(normalizedText);
+      parts.push(text);
+    }
+  }
+  return parts;
 }
 
 function mergeImageUrls(...lists) {
@@ -1606,6 +1682,10 @@ function normalize(value) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+}
+
+function cleanVisibleText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
 }
 
 function coerceTextAnswer(value) {
