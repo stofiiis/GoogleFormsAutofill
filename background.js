@@ -539,22 +539,91 @@ function normalizeAnswerForQuestion(answer, question) {
   }
 
   if (questionType === "checkbox") {
-    const normalizedCheckbox = normalizeCheckboxAnswer(answer);
-    if (!normalizedCheckbox.length) {
-      return { ok: false, value: [], reason: "checkbox answer has no valid targets." };
-    }
-    return { ok: true, value: normalizedCheckbox };
+    return normalizeCheckboxAnswerForQuestion(answer, question);
   }
 
-  if (questionType === "multiple_choice" || questionType === "dropdown" || questionType === "linear_scale") {
-    const single = normalizeSingleChoiceAnswer(answer);
-    if (single === null || single === "") {
-      return { ok: false, value: null, reason: "single-choice answer is empty." };
-    }
-    return { ok: true, value: single };
+  if (questionType === "multiple_choice" || questionType === "dropdown") {
+    return normalizeSingleChoiceAnswerForQuestion(answer, question);
+  }
+
+  if (questionType === "linear_scale") {
+    return normalizeLinearScaleAnswerForQuestion(answer, question);
   }
 
   return { ok: true, value: answer };
+}
+
+function normalizeSingleChoiceAnswerForQuestion(answer, question) {
+  const single = normalizeSingleChoiceAnswer(answer);
+  if (single === null || single === "") {
+    return { ok: false, value: null, reason: "single-choice answer is empty." };
+  }
+
+  const matched = findMatchingQuestionOption(question, single);
+  if (!matched) {
+    return { ok: false, value: null, reason: "single-choice answer does not match any available option." };
+  }
+
+  return {
+    ok: true,
+    value: canonicalizeQuestionOptionValue(matched, "single_choice")
+  };
+}
+
+function normalizeLinearScaleAnswerForQuestion(answer, question) {
+  const single = normalizeSingleChoiceAnswer(answer);
+  if (single === null || single === "") {
+    return { ok: false, value: null, reason: "linear scale answer is empty." };
+  }
+
+  const matched = findMatchingLinearScaleOption(question, single) || findMatchingQuestionOption(question, single);
+  if (!matched) {
+    return { ok: false, value: null, reason: "linear scale answer does not match the available scale." };
+  }
+
+  return {
+    ok: true,
+    value: canonicalizeQuestionOptionValue(matched, "linear_scale")
+  };
+}
+
+function normalizeCheckboxAnswerForQuestion(answer, question) {
+  const normalizedCheckbox = normalizeCheckboxAnswer(answer);
+  if (!normalizedCheckbox.length) {
+    return { ok: false, value: [], reason: "checkbox answer has no valid targets." };
+  }
+
+  const values = [];
+  const seen = new Set();
+  let unmatchedCount = 0;
+
+  for (const target of normalizedCheckbox) {
+    const matched = findMatchingQuestionOption(question, target);
+    if (!matched) {
+      unmatchedCount += 1;
+      continue;
+    }
+
+    const canonicalValue = canonicalizeQuestionOptionValue(matched, "checkbox");
+    const key = `${typeof canonicalValue}:${String(canonicalValue)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    values.push(canonicalValue);
+  }
+
+  if (!values.length) {
+    return { ok: false, value: [], reason: "checkbox answer has no matching options." };
+  }
+  if (unmatchedCount > 0) {
+    return {
+      ok: false,
+      value: values,
+      reason: `checkbox answer had ${unmatchedCount} unmatched target(s).`
+    };
+  }
+  return { ok: true, value: values };
 }
 
 function normalizeTextAnswer(answer) {
@@ -650,6 +719,170 @@ function normalizeCheckboxAnswer(answer) {
 
   const single = normalizeSingleChoiceAnswer(answer);
   return single === null || single === "" ? [] : [single];
+}
+
+function findMatchingQuestionOption(question, target) {
+  const options = getNormalizedQuestionOptions(question);
+  if (!options.length || target === null || target === undefined || target === "") {
+    return null;
+  }
+
+  if (typeof target === "number") {
+    return findExactNumericTextOption(options, target) || findQuestionOptionByIndex(options, target);
+  }
+
+  if (typeof target === "string") {
+    const trimmed = target.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const exactText = findExactTextQuestionOption(options, trimmed);
+    if (exactText) {
+      return exactText;
+    }
+
+    if (/^-?\d+$/.test(trimmed)) {
+      return findExactNumericTextOption(options, Number(trimmed)) || findQuestionOptionByIndex(options, Number(trimmed));
+    }
+
+    return findUniqueLooseTextQuestionOption(options, trimmed);
+  }
+
+  return null;
+}
+
+function findMatchingLinearScaleOption(question, target) {
+  const options = getNormalizedQuestionOptions(question);
+  if (!options.length) {
+    return null;
+  }
+
+  const numericTarget = extractNumericValue(target);
+  if (numericTarget === null) {
+    return null;
+  }
+
+  return (
+    options.find((option) => {
+      const optionNumeric = extractNumericValue(option.text);
+      return optionNumeric !== null && optionNumeric === numericTarget;
+    }) || findQuestionOptionByIndex(options, numericTarget)
+  );
+}
+
+function canonicalizeQuestionOptionValue(option, mode) {
+  const optionText = String(option?.text || "").trim();
+  if (mode === "linear_scale") {
+    const numericValue = extractNumericValue(optionText);
+    return numericValue !== null ? numericValue : option.optionIndex;
+  }
+  if (isNumericOptionLabel(optionText)) {
+    return optionText;
+  }
+  return option.optionIndex;
+}
+
+function getNormalizedQuestionOptions(question) {
+  if (!Array.isArray(question?.options)) {
+    return [];
+  }
+
+  return question.options.map((option, index) => ({
+    optionIndex: normalizeOptionIndex(option?.optionIndex, index + 1),
+    text: String(option?.text || "").trim(),
+    normalizedText: normalizeOptionText(option?.text)
+  }));
+}
+
+function findExactTextQuestionOption(options, text) {
+  const normalizedText = normalizeOptionText(text);
+  if (!normalizedText) {
+    return null;
+  }
+  return options.find((option) => option.normalizedText === normalizedText) || null;
+}
+
+function findExactNumericTextOption(options, value) {
+  return findExactTextQuestionOption(options, String(value));
+}
+
+function findQuestionOptionByIndex(options, value) {
+  const index = coerceQuestionOptionIndex(value, options.length);
+  if (index === null) {
+    return null;
+  }
+  return options.find((option) => Number(option.optionIndex) === index) || options[index - 1] || null;
+}
+
+function findUniqueLooseTextQuestionOption(options, text) {
+  const normalizedTarget = normalizeOptionText(text);
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  const targetTokens = new Set(normalizedTarget.split(/\s+/).filter(Boolean));
+  const matches = options.filter((option) => {
+    if (!option.normalizedText) {
+      return false;
+    }
+    if (targetTokens.has(option.normalizedText)) {
+      return true;
+    }
+    if (option.normalizedText.length < 3) {
+      return false;
+    }
+    return option.normalizedText.includes(normalizedTarget) || normalizedTarget.includes(option.normalizedText);
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function coerceQuestionOptionIndex(value, totalOptions) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || totalOptions < 1) {
+    return null;
+  }
+  if (number >= 1 && number <= totalOptions) {
+    return number;
+  }
+  if (number >= 0 && number < totalOptions) {
+    return number + 1;
+  }
+  return null;
+}
+
+function isNumericOptionLabel(text) {
+  return /^-?\d+(?:[.,]\d+)?$/.test(String(text || "").trim());
+}
+
+function normalizeOptionText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function extractNumericValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.round(value) : null;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = value.trim().match(/^-?\d+$/) || value.trim().match(/-?\d+/);
+  if (!match) {
+    return null;
+  }
+
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
 }
 
 async function getSettings() {

@@ -742,9 +742,23 @@ async function clickControl(control, expectedChecked = true) {
 }
 
 function clickElement(element) {
+  if (typeof element?.focus === "function") {
+    try {
+      element.focus({ preventScroll: true });
+    } catch (_error) {
+      element.focus();
+    }
+  }
   element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
   element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
   element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  if (typeof element?.click === "function") {
+    try {
+      element.click();
+    } catch (_error) {
+      // ignore native click failures and keep synthetic path
+    }
+  }
 }
 
 function isChecked(control) {
@@ -1188,10 +1202,26 @@ async function openDropdownOptions(dropdownControl) {
   clickElement(dropdownControl);
   await sleep(DROPDOWN_AFTER_CLICK_DELAY_MS);
 
-  const options = await waitFor(() => {
+  let options = await waitFor(() => {
     const visible = getVisibleDropdownOptions();
     return visible.length ? visible : null;
   }, DROPDOWN_OPEN_TIMEOUT_MS, DROPDOWN_OPEN_INTERVAL_MS);
+
+  if (!options?.length) {
+    sendControlKey(dropdownControl, "Enter");
+    options = await waitFor(() => {
+      const visible = getVisibleDropdownOptions();
+      return visible.length ? visible : null;
+    }, 800, DROPDOWN_OPEN_INTERVAL_MS);
+  }
+
+  if (!options?.length) {
+    sendControlKey(dropdownControl, "ArrowDown");
+    options = await waitFor(() => {
+      const visible = getVisibleDropdownOptions();
+      return visible.length ? visible : null;
+    }, 800, DROPDOWN_OPEN_INTERVAL_MS);
+  }
 
   return options || [];
 }
