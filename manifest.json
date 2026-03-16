@@ -5,7 +5,8 @@
   "description": "Reads Google Form questions, asks OpenAI for answers, and fills the form automatically.",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "https://docs.google.com/forms/*",

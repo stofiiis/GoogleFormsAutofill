@@ -123,7 +123,7 @@ applyButton.addEventListener("click", async () => {
       throw new Error("No preview items selected.");
     }
 
-    const response = await chrome.tabs.sendMessage(activeTab.id, {
+    const response = await sendMessageToFormTab(activeTab.id, {
       type: "APPLY_FORM_ANSWERS",
       answers: selectedAnswers
     });
@@ -351,7 +351,7 @@ async function getActiveGoogleFormTab() {
 }
 
 async function runDirectFill(tabId) {
-  const response = await chrome.tabs.sendMessage(tabId, {
+  const response = await sendMessageToFormTab(tabId, {
     type: "AUTO_FILL_FORM",
     customInstruction: instructionEl.value.trim()
   });
@@ -364,7 +364,7 @@ async function runDirectFill(tabId) {
 }
 
 async function runPreview(tabId) {
-  const response = await chrome.tabs.sendMessage(tabId, {
+  const response = await sendMessageToFormTab(tabId, {
     type: "PREVIEW_FORM_ANSWERS",
     customInstruction: instructionEl.value.trim()
   });
@@ -536,4 +536,26 @@ function groupValidationIssuesByQuestionId(issues) {
 function setStatus(message, isError) {
   statusEl.textContent = message;
   statusEl.className = isError ? "error" : "success";
+}
+
+async function sendMessageToFormTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    if (!shouldRetryAfterInject(error)) {
+      throw error;
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"]
+    });
+
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+function shouldRetryAfterInject(error) {
+  const message = String(error?.message || "");
+  return /receiving end does not exist|could not establish connection/i.test(message);
 }

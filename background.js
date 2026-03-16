@@ -4,6 +4,7 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_TIMEOUT_MS = 30000;
 const OPENAI_MAX_RETRIES = 2;
 const OPENAI_RETRY_BASE_DELAY_MS = 800;
+const CONTENT_SCRIPT_FILES = ["content.js"];
 
 const ANSWERS_JSON_SCHEMA = {
   type: "object",
@@ -80,7 +81,7 @@ async function runAutoFillOnActiveTab() {
   }
 
   const customInstruction = await getLastInstruction();
-  const response = await chrome.tabs.sendMessage(activeTab.id, {
+  const response = await sendMessageToFormTab(activeTab.id, {
     type: "AUTO_FILL_FORM",
     customInstruction
   });
@@ -88,6 +89,28 @@ async function runAutoFillOnActiveTab() {
   if (!response?.ok) {
     throw new Error(response?.error || "Auto-fill failed.");
   }
+}
+
+async function sendMessageToFormTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    if (!shouldRetryAfterInject(error)) {
+      throw error;
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: CONTENT_SCRIPT_FILES
+    });
+
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+function shouldRetryAfterInject(error) {
+  const message = String(error?.message || "");
+  return /receiving end does not exist|could not establish connection/i.test(message);
 }
 
 async function getLastInstruction() {

@@ -1,3 +1,6 @@
+if (!globalThis.__formsAutofillContentLoaded) {
+  globalThis.__formsAutofillContentLoaded = true;
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !message.type) {
     return;
@@ -1648,4 +1651,5 @@ async function waitFor(checker, timeoutMs, intervalMs) {
     await sleep(intervalMs);
   }
   return null;
+}
 }
