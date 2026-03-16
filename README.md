@@ -58,3 +58,11 @@ You can customize the shortcut in `opera://extensions/shortcuts`.
 - `popup.html` + `popup.js`: Quick action UI
 - `options.html` + `options.js`: API settings
 - `styles.css`: Shared popup/options styling
+
+## Validation
+
+Run a quick local smoke test for answer normalization with:
+
+```bash
+node smoke-tests.js
+```
